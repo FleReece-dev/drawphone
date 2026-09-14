@@ -1,0 +1,14 @@
+{
+  "name": "drawphone",
+  "version": "1.0.0",
+  "description": "Real-time multiplayer drawing telephone game (Gartic Phone style)",
+  "private": true,
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

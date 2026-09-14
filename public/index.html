@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
+<title>Drawphone</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div id="toast" class="toast hidden"></div>
+
+<!-- HOME -->
+<section id="view-home" class="view active">
+  <div class="card center">
+    <h1 class="logo">✏️ Drawphone</h1>
+    <p class="subtitle">A telephone-style drawing &amp; guessing party game</p>
+
+    <label class="field">
+      <span>Your name</span>
+      <input id="name-input" maxlength="20" placeholder="e.g. Sam" autocomplete="off" />
+    </label>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="create">Create room</button>
+      <button class="tab-btn" data-tab="join">Join room</button>
+    </div>
+
+    <div id="tab-create" class="tab-panel active">
+      <button id="create-room-btn" class="btn primary big">Create a new room</button>
+    </div>
+
+    <div id="tab-join" class="tab-panel">
+      <label class="field">
+        <span>Room code</span>
+        <input id="code-input" maxlength="5" placeholder="ABCDE" autocomplete="off" style="text-transform:uppercase" />
+      </label>
+      <button id="join-room-btn" class="btn primary big">Join room</button>
+    </div>
+
+    <p id="home-error" class="error hidden"></p>
+  </div>
+</section>
+
+<!-- LOBBY -->
+<section id="view-lobby" class="view">
+  <div class="card">
+    <div class="lobby-header">
+      <div>
+        <div class="room-code-label">Room code</div>
+        <div id="room-code" class="room-code">ABCDE</div>
+      </div>
+      <button id="copy-link-btn" class="btn ghost small">Copy invite link</button>
+    </div>
+
+    <h3>Players (<span id="player-count">0</span>)</h3>
+    <ul id="player-list" class="player-list"></ul>
+
+    <div id="host-settings" class="settings hidden">
+      <h3>Settings</h3>
+      <label class="field inline">
+        <span>Writing time (sec)</span>
+        <input id="write-seconds" type="number" min="15" max="180" />
+      </label>
+      <label class="field inline">
+        <span>Drawing time (sec)</span>
+        <input id="draw-seconds" type="number" min="20" max="240" />
+      </label>
+      <button id="start-game-btn" class="btn primary big">Start game</button>
+      <p class="hint">Need at least 3 players to start.</p>
+    </div>
+    <p id="lobby-wait-msg" class="hint">Waiting for the host to start the game…</p>
+    <button id="leave-room-btn" class="btn ghost small">Leave room</button>
+  </div>
+</section>
+
+<!-- GAME -->
+<section id="view-game" class="view">
+  <div class="card wide">
+    <div class="game-topbar">
+      <div id="step-indicator" class="pill">Round 1 / 6</div>
+      <div id="timer" class="pill timer">45</div>
+      <div id="progress-indicator" class="pill">0 / 0 done</div>
+    </div>
+
+    <div id="prompt-box" class="prompt-box hidden">
+      <div class="prompt-label">You are drawing:</div>
+      <div id="prompt-text" class="prompt-text"></div>
+    </div>
+
+    <div id="prev-drawing-box" class="prev-drawing-box hidden">
+      <div class="prompt-label">Guess what this drawing shows:</div>
+      <img id="prev-drawing-img" alt="Previous drawing" />
+    </div>
+
+    <!-- TEXT ENTRY -->
+    <div id="text-entry" class="text-entry hidden">
+      <textarea id="text-input" maxlength="80" placeholder="Type your phrase…"></textarea>
+      <div class="text-entry-row">
+        <span id="char-count" class="hint">0 / 80</span>
+        <button id="random-prompt-btn" class="btn ghost small">🎲 Random idea</button>
+      </div>
+      <button id="submit-text-btn" class="btn primary big">Submit</button>
+    </div>
+
+    <!-- DRAWING ENTRY -->
+    <div id="draw-entry" class="draw-entry hidden">
+      <div class="toolbar">
+        <div id="color-swatches" class="swatches"></div>
+        <input id="color-picker" type="color" value="#111111" title="Custom color" />
+        <input id="brush-size" type="range" min="2" max="28" value="6" title="Brush size" />
+        <button id="eraser-btn" class="btn ghost small" title="Eraser">🧽</button>
+        <button id="undo-btn" class="btn ghost small" title="Undo">↩️</button>
+        <button id="clear-btn" class="btn ghost small" title="Clear">🗑️</button>
+      </div>
+      <div class="canvas-wrap">
+        <canvas id="draw-canvas" width="640" height="480"></canvas>
+      </div>
+      <button id="submit-draw-btn" class="btn primary big">Done drawing</button>
+    </div>
+
+    <div id="waiting-overlay" class="waiting-overlay hidden">
+      <div class="spinner"></div>
+      <p>Waiting for other players…</p>
+      <p id="waiting-progress" class="hint"></p>
+    </div>
+  </div>
+</section>
+
+<!-- REVEAL -->
+<section id="view-reveal" class="view">
+  <div class="card wide center">
+    <div id="reveal-book-indicator" class="pill">Book 1 / 6</div>
+    <h2 id="reveal-owner" class="reveal-owner"></h2>
+    <div id="reveal-content" class="reveal-content"></div>
+    <div id="reveal-author" class="reveal-author"></div>
+
+    <div id="reveal-controls" class="reveal-controls hidden">
+      <button id="reveal-prev-btn" class="btn ghost">◀ Prev</button>
+      <button id="reveal-next-btn" class="btn primary">Next ▶</button>
+    </div>
+    <button id="play-again-btn" class="btn primary big hidden">Play again</button>
+  </div>
+</section>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="client.js"></script>
+</body>
+</html>
