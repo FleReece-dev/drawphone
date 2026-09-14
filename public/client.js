@@ -3,13 +3,13 @@ const socket = io();
 const state = {
   name: "",
   code: "",
-  playerId: null,
+  myId: null,
   isHost: false,
-  currentType: null, // 'text' | 'drawing'
-  deadline: 0,
-  timerInterval: null,
-  hasSubmittedThisStep: false,
-  books: [],
+  role: null, // 'drawer' | 'guesser' | 'spectator'
+  myWord: "",
+  hasGuessedCorrectly: false,
+  lastScoreboard: { players: [], drawerId: null },
+  countdownInterval: null,
 };
 
 // ---------- helpers ----------
@@ -18,7 +18,7 @@ const views = {
   home: $("#view-home"),
   lobby: $("#view-lobby"),
   game: $("#view-game"),
-  reveal: $("#view-reveal"),
+  gameover: $("#view-gameover"),
 };
 
 function showView(name) {
@@ -37,6 +37,17 @@ function toast(msg) {
 
 function saveSession() {
   sessionStorage.setItem("drawphone_name", state.name);
+}
+
+function escapeHtml(str) {
+  const d = document.createElement("div");
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+function nameFor(id) {
+  const p = state.lastScoreboard.players.find((p) => p.id === id);
+  return p ? p.name : "?";
 }
 
 // ---------- HOME ----------
@@ -72,7 +83,7 @@ $("#create-room-btn").addEventListener("click", () => {
     if (!res.ok) return setHomeError(res.error || "Could not create room.");
     setHomeError(null);
     state.code = res.code;
-    state.playerId = res.playerId;
+    state.myId = res.playerId;
     history.replaceState(null, "", "?room=" + res.code);
   });
 });
@@ -88,12 +99,11 @@ $("#join-room-btn").addEventListener("click", () => {
     if (!res.ok) return setHomeError(res.error || "Could not join room.");
     setHomeError(null);
     state.code = res.code;
-    state.playerId = res.playerId;
+    state.myId = res.playerId;
     history.replaceState(null, "", "?room=" + res.code);
   });
 });
 
-// auto-fill room code from URL (?room=CODE)
 const urlRoom = new URLSearchParams(location.search).get("room");
 if (urlRoom) {
   $("#code-input").value = urlRoom.toUpperCase();
@@ -116,20 +126,16 @@ $("#leave-room-btn").addEventListener("click", () => {
   showView("home");
 });
 
-let writeSecondsDraft = 45;
-let drawSecondsDraft = 80;
-$("#write-seconds").addEventListener("change", (e) => {
-  writeSecondsDraft = e.target.value;
-  socket.emit("update-settings", { writeSeconds: writeSecondsDraft, drawSeconds: drawSecondsDraft });
-});
-$("#draw-seconds").addEventListener("change", (e) => {
-  drawSecondsDraft = e.target.value;
-  socket.emit("update-settings", { writeSeconds: writeSecondsDraft, drawSeconds: drawSecondsDraft });
+let roundSecondsDraft = 80;
+$("#round-seconds").addEventListener("change", (e) => {
+  roundSecondsDraft = e.target.value;
+  socket.emit("update-settings", { roundSeconds: roundSecondsDraft });
 });
 $("#start-game-btn").addEventListener("click", () => socket.emit("start-game"));
 
 socket.on("lobby-update", (room) => {
   state.isHost = room.hostId === socket.id;
+  clearInterval(state.countdownInterval);
   showView("lobby");
   $("#room-code").textContent = room.code;
   $("#player-count").textContent = room.players.length;
@@ -144,125 +150,229 @@ socket.on("lobby-update", (room) => {
     list.appendChild(li);
   });
 
-  writeSecondsDraft = room.settings.writeSeconds;
-  drawSecondsDraft = room.settings.drawSeconds;
-  $("#write-seconds").value = room.settings.writeSeconds;
-  $("#draw-seconds").value = room.settings.drawSeconds;
+  roundSecondsDraft = room.settings.roundSeconds;
+  $("#round-seconds").value = room.settings.roundSeconds;
 
   $("#host-settings").classList.toggle("hidden", !state.isHost);
   $("#lobby-wait-msg").classList.toggle("hidden", state.isHost);
-  $("#start-game-btn").disabled = room.players.length < 3;
+  $("#start-game-btn").disabled = room.players.length < 2;
 });
 
-function escapeHtml(str) {
-  const d = document.createElement("div");
-  d.textContent = str;
-  return d.innerHTML;
+// ---------- SCOREBOARD ----------
+function renderScoreboard(sb, targetId) {
+  state.lastScoreboard = sb;
+  const list = $(targetId);
+  list.innerHTML = "";
+  const sorted = [...sb.players].sort((a, b) => b.score - a.score);
+  sorted.forEach((p) => {
+    const li = document.createElement("li");
+    if (p.id === sb.drawerId) li.classList.add("is-drawer");
+    if (p.isSpectator) li.classList.add("is-spectator");
+    li.innerHTML = `<span class="sb-name">${p.id === sb.drawerId ? "✏️" : ""}${p.isSpectator ? "👀" : ""} ${escapeHtml(
+      p.name
+    )}${p.id === state.myId ? " (you)" : ""}</span><span class="sb-score">${p.score}</span>`;
+    list.appendChild(li);
+  });
 }
 
-// ---------- GAME ----------
-const textEntry = $("#text-entry");
-const drawEntry = $("#draw-entry");
-const textInput = $("#text-input");
-const canvas = $("#draw-canvas");
-const ctx = canvas.getContext("2d");
+function determineRole(sb, drawerId) {
+  const me = sb.players.find((p) => p.id === state.myId);
+  if (!me) return "spectator";
+  if (drawerId === state.myId) return "drawer";
+  if (me.isSpectator) return "spectator";
+  return "guesser";
+}
 
-textInput.addEventListener("input", () => {
-  $("#char-count").textContent = `${textInput.value.length} / 80`;
+socket.on("scoreboard-update", (sb) => {
+  renderScoreboard(sb, "#scoreboard-list");
 });
 
-let lastSuggestion = "";
+// ---------- COUNTDOWN ----------
+function startCountdown(pillEl, deadline, onExpire) {
+  clearInterval(state.countdownInterval);
+  const tick = () => {
+    const remaining = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+    pillEl.textContent = remaining;
+    pillEl.classList.toggle("low", remaining <= 10);
+    if (remaining <= 0) {
+      clearInterval(state.countdownInterval);
+      onExpire && onExpire();
+    }
+  };
+  tick();
+  state.countdownInterval = setInterval(tick, 250);
+}
 
-$("#random-prompt-btn").addEventListener("click", () => {
-  socket.emit("get-random-prompt", (prompt) => {
-    lastSuggestion = prompt;
-    textInput.value = prompt;
-    $("#char-count").textContent = `${textInput.value.length} / 80`;
-    textInput.focus();
+// ---------- CHOOSING PHASE ----------
+socket.on("round-choosing", (data) => {
+  showView("game");
+  $("#reveal-overlay").classList.add("hidden");
+  $("#choosing-block").classList.remove("hidden");
+  $("#drawing-block").classList.add("hidden");
+  clearCanvas();
+  $("#chat-feed").innerHTML = "";
+  state.hasGuessedCorrectly = false;
+
+  renderScoreboard(data.scoreboard, "#scoreboard-list");
+  state.role = determineRole(data.scoreboard, data.drawerId);
+
+  const isMe = data.drawerId === state.myId;
+  $("#choosing-self").classList.toggle("hidden", !isMe);
+  $("#choosing-other").classList.toggle("hidden", isMe);
+  $("#choosing-drawer-name").textContent = data.drawerName;
+
+  startCountdown($("#choosing-pill"), data.deadline);
+});
+
+socket.on("choose-word-options", (data) => {
+  const wrap = $("#word-options");
+  wrap.innerHTML = "";
+  data.options.forEach((word) => {
+    const btn = document.createElement("button");
+    btn.className = "btn primary";
+    btn.textContent = word;
+    btn.addEventListener("click", () => {
+      wrap.querySelectorAll("button").forEach((b) => (b.disabled = true));
+      socket.emit("choose-word", { word });
+    });
+    wrap.appendChild(btn);
   });
 });
 
-function resetGameView() {
-  clearInterval(state.timerInterval);
-  state.hasSubmittedThisStep = false;
-  $("#waiting-overlay").classList.add("hidden");
-  textEntry.classList.add("hidden");
-  drawEntry.classList.add("hidden");
-  $("#prompt-box").classList.add("hidden");
-  $("#prev-drawing-box").classList.add("hidden");
+socket.on("your-word", (data) => {
+  state.myWord = data.word;
+});
+
+// ---------- DRAWING PHASE ----------
+socket.on("round-drawing", (data) => {
+  $("#choosing-block").classList.add("hidden");
+  $("#drawing-block").classList.remove("hidden");
+  $("#reveal-overlay").classList.add("hidden");
+
+  renderScoreboard(data.scoreboard, "#scoreboard-list");
+  state.role = determineRole(data.scoreboard, data.drawerId);
+  state.hasGuessedCorrectly = false;
+
+  const maskedWordEl = $("#masked-word");
+  maskedWordEl.textContent = state.role === "drawer" ? state.myWord : data.maskedWord;
+
+  const rolePill = $("#role-pill");
+  rolePill.textContent =
+    state.role === "drawer" ? "✏️ You are drawing" : state.role === "spectator" ? "👀 Spectating" : "🤔 Guessing";
+
+  clearCanvas();
+  canvas.classList.toggle("interactive", state.role === "drawer");
+  $("#toolbar").classList.toggle("hidden", state.role !== "drawer");
+  $("#guess-form").classList.toggle("hidden", state.role !== "guesser");
+  $("#spectator-note").classList.toggle("hidden", state.role !== "spectator");
+
+  $("#guess-input").value = "";
+  $("#guess-input").disabled = false;
+  $("#guess-form").querySelector("button").disabled = false;
+  if (state.role === "guesser") setTimeout(() => $("#guess-input").focus(), 50);
+
+  startCountdown($("#timer"), data.deadline);
+});
+
+// ---------- CHAT / GUESSES ----------
+const chatFeed = $("#chat-feed");
+function appendChat(html, cls) {
+  const div = document.createElement("div");
+  div.className = "msg" + (cls ? " " + cls : "");
+  div.innerHTML = html;
+  chatFeed.appendChild(div);
+  chatFeed.scrollTop = chatFeed.scrollHeight;
 }
 
-socket.on("your-turn", (data) => {
-  showView("game");
-  resetGameView();
-  state.currentType = data.type;
-  state.deadline = data.deadline;
-  lastSuggestion = data.promptSuggestion || "";
+socket.on("chat-message", (data) => {
+  const name = escapeHtml(data.name);
+  if (data.correct) {
+    if (data.self) {
+      appendChat("You guessed it! 🎉", "self-correct");
+      state.hasGuessedCorrectly = true;
+      $("#guess-input").disabled = true;
+      $("#guess-form").querySelector("button").disabled = true;
+    } else if (data.text) {
+      appendChat(`<span class="name">${name}</span> guessed: "${escapeHtml(data.text)}" ✅`, "correct");
+    } else {
+      appendChat(`<span class="name">${name}</span> guessed the word! ✅`, "correct");
+    }
+  } else {
+    appendChat(`<span class="name">${name}:</span> ${escapeHtml(data.text)}`);
+  }
+});
 
-  $("#step-indicator").textContent = `Round ${data.step + 1} / ${data.totalSteps}`;
+const guessForm = $("#guess-form");
+guessForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (state.role !== "guesser" || state.hasGuessedCorrectly) return;
+  const input = $("#guess-input");
+  const text = input.value.trim();
+  if (!text) return;
+  socket.emit("submit-guess", { text });
+  input.value = "";
+});
 
-  if (data.prevEntry) {
-    if (data.prevEntry.type === "text") {
-      $("#prompt-box").classList.remove("hidden");
-      $("#prompt-text").textContent = data.prevEntry.content;
-    } else if (data.prevEntry.type === "drawing" && data.prevEntry.content) {
-      $("#prev-drawing-box").classList.remove("hidden");
-      $("#prev-drawing-img").src = data.prevEntry.content;
+// ---------- ROUND REVEAL ----------
+socket.on("round-reveal", (data) => {
+  clearInterval(state.countdownInterval);
+  renderScoreboard(data.scoreboard, "#scoreboard-list");
+
+  const overlay = $("#reveal-overlay");
+  $("#reveal-word").textContent = data.word;
+
+  let summary = "";
+  if (data.reason === "win") {
+    summary = `${escapeHtml(nameFor(data.winnerId))} nailed it and won the whole game! 🏆`;
+  } else if (data.reason === "drawer-left") {
+    summary = "The drawer left before finishing this round — no points changed.";
+  } else {
+    const others = data.scoreboard.players.filter((p) => p.id !== data.drawerId);
+    const gotIt = others.filter((p) => data.correctGuessers.includes(p.id)).map((p) => p.name);
+    const missed = others.filter((p) => !data.correctGuessers.includes(p.id)).map((p) => p.name);
+    const prefix =
+      data.reason === "ai"
+        ? "The AI guessed it first!"
+        : data.reason === "all-guessed"
+        ? "Everyone beat the AI!"
+        : "Time's up!";
+    summary += `<div>${prefix}</div>`;
+    summary += `<div>✅ Beat the AI: ${gotIt.length ? escapeHtml(gotIt.join(", ")) : "nobody"}</div>`;
+    if (missed.length) summary += `<div>💔 Lost a point: ${escapeHtml(missed.join(", "))}</div>`;
+    if (data.newlySpectating && data.newlySpectating.length) {
+      summary += `<div>😢 Out of points, now spectating: ${escapeHtml(
+        data.newlySpectating.map(nameFor).join(", ")
+      )}</div>`;
     }
   }
-
-  if (data.type === "text") {
-    textEntry.classList.remove("hidden");
-    textInput.value = "";
-    textInput.disabled = false;
-    $("#char-count").textContent = "0 / 80";
-    $("#submit-text-btn").disabled = false;
-    setTimeout(() => textInput.focus(), 50);
-  } else {
-    drawEntry.classList.remove("hidden");
-    initCanvasForNewTurn();
-  }
-
-  startTimer();
+  $("#reveal-summary").innerHTML = summary;
+  overlay.classList.remove("hidden");
 });
 
-function startTimer() {
-  clearInterval(state.timerInterval);
-  const tick = () => {
-    const remaining = Math.max(0, Math.round((state.deadline - Date.now()) / 1000));
-    const el = $("#timer");
-    el.textContent = remaining;
-    el.classList.toggle("low", remaining <= 10);
-    if (remaining <= 0) clearInterval(state.timerInterval);
-  };
-  tick();
-  state.timerInterval = setInterval(tick, 250);
-}
-
-socket.on("step-progress", (data) => {
-  $("#progress-indicator").textContent = `${data.submitted} / ${data.total} done`;
-  $("#waiting-progress").textContent = `${data.submitted} / ${data.total} players have submitted`;
+// ---------- GAME OVER ----------
+socket.on("game-over", (data) => {
+  clearInterval(state.countdownInterval);
+  setTimeout(() => {
+    showView("gameover");
+    renderScoreboard(data.scoreboard, "#final-scoreboard");
+    $("#winner-name").textContent = `${nameFor(data.winnerId)} wins!`;
+    state.isHost = data.scoreboard.hostId === state.myId;
+    $("#play-again-btn").classList.toggle("hidden", !state.isHost);
+    $("#play-again-wait").classList.toggle("hidden", state.isHost);
+  }, 2000);
 });
 
-$("#submit-text-btn").addEventListener("click", () => {
-  const val = textInput.value.trim();
-  submitEntry(val.length ? val : lastSuggestion || "...");
-});
+$("#play-again-btn").addEventListener("click", () => socket.emit("play-again"));
 
-function submitEntry(content) {
-  if (state.hasSubmittedThisStep) return;
-  state.hasSubmittedThisStep = true;
-  socket.emit("submit-entry", { content });
-  clearInterval(state.timerInterval);
-  $("#waiting-overlay").classList.remove("hidden");
-}
-
-// ----- Drawing canvas -----
+// ---------- CANVAS DRAWING ----------
+const canvas = $("#draw-canvas");
+const ctx = canvas.getContext("2d");
 let drawing = false;
 let brushColor = "#111111";
 let brushSize = 6;
 let eraseMode = false;
-let undoStack = [];
+let lastPos = null;
+let remoteLastPos = null;
 const PALETTE = ["#111111", "#e5484d", "#ff8a3d", "#f4c531", "#3ecf5e", "#3d8bff", "#7c5cff", "#ffffff"];
 
 function buildSwatches() {
@@ -276,6 +386,7 @@ function buildSwatches() {
     s.addEventListener("click", () => {
       brushColor = c;
       eraseMode = false;
+      $("#eraser-btn").classList.remove("selected");
       document.querySelectorAll(".swatch").forEach((el) => el.classList.remove("selected"));
       s.classList.add("selected");
     });
@@ -287,6 +398,7 @@ buildSwatches();
 $("#color-picker").addEventListener("input", (e) => {
   brushColor = e.target.value;
   eraseMode = false;
+  $("#eraser-btn").classList.remove("selected");
   document.querySelectorAll(".swatch").forEach((el) => el.classList.remove("selected"));
 });
 $("#brush-size").addEventListener("input", (e) => (brushSize = parseInt(e.target.value, 10)));
@@ -295,29 +407,16 @@ $("#eraser-btn").addEventListener("click", () => {
   $("#eraser-btn").classList.toggle("selected");
 });
 $("#clear-btn").addEventListener("click", () => {
-  pushUndo();
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-});
-$("#undo-btn").addEventListener("click", () => {
-  if (undoStack.length) {
-    const img = undoStack.pop();
-    ctx.putImageData(img, 0, 0);
-  }
+  if (state.role !== "drawer") return;
+  clearCanvas();
+  socket.emit("stroke", { type: "clear" });
 });
 
-function initCanvasForNewTurn() {
-  undoStack = [];
+function clearCanvas() {
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  eraseMode = false;
-  $("#eraser-btn").classList.remove("selected");
 }
-
-function pushUndo() {
-  undoStack.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
-  if (undoStack.length > 25) undoStack.shift();
-}
+clearCanvas();
 
 function getPos(e) {
   const rect = canvas.getBoundingClientRect();
@@ -330,41 +429,44 @@ function getPos(e) {
   };
 }
 
-let lastPos = null;
-function pointerDown(e) {
-  e.preventDefault();
-  pushUndo();
-  drawing = true;
-  lastPos = getPos(e);
-  drawDot(lastPos);
-}
-function pointerMove(e) {
-  if (!drawing) return;
-  e.preventDefault();
-  const pos = getPos(e);
-  drawLine(lastPos, pos);
-  lastPos = pos;
-}
-function pointerUp() {
-  drawing = false;
-  lastPos = null;
-}
-
-function drawDot(pos) {
+function drawDotAt(pos, color, size) {
   ctx.beginPath();
-  ctx.fillStyle = eraseMode ? "#ffffff" : brushColor;
-  ctx.arc(pos.x, pos.y, brushSize / 2, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.arc(pos.x, pos.y, size / 2, 0, Math.PI * 2);
   ctx.fill();
 }
-function drawLine(from, to) {
-  ctx.strokeStyle = eraseMode ? "#ffffff" : brushColor;
-  ctx.lineWidth = brushSize;
+function drawLineBetween(from, to, color, size) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = size;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   ctx.beginPath();
   ctx.moveTo(from.x, from.y);
   ctx.lineTo(to.x, to.y);
   ctx.stroke();
+}
+
+function pointerDown(e) {
+  if (state.role !== "drawer") return;
+  e.preventDefault();
+  drawing = true;
+  lastPos = getPos(e);
+  const color = eraseMode ? "#ffffff" : brushColor;
+  drawDotAt(lastPos, color, brushSize);
+  socket.emit("stroke", { type: "start", x: lastPos.x, y: lastPos.y, color, size: brushSize });
+}
+function pointerMove(e) {
+  if (state.role !== "drawer" || !drawing) return;
+  e.preventDefault();
+  const pos = getPos(e);
+  const color = eraseMode ? "#ffffff" : brushColor;
+  drawLineBetween(lastPos, pos, color, brushSize);
+  socket.emit("stroke", { type: "move", x: pos.x, y: pos.y, color, size: brushSize });
+  lastPos = pos;
+}
+function pointerUp() {
+  drawing = false;
+  lastPos = null;
 }
 
 canvas.addEventListener("mousedown", pointerDown);
@@ -374,64 +476,18 @@ canvas.addEventListener("touchstart", pointerDown, { passive: false });
 canvas.addEventListener("touchmove", pointerMove, { passive: false });
 canvas.addEventListener("touchend", pointerUp);
 
-$("#submit-draw-btn").addEventListener("click", () => {
-  submitEntry(canvas.toDataURL("image/png"));
-});
-
-// ---------- REVEAL ----------
-socket.on("game-reveal", (data) => {
-  clearInterval(state.timerInterval);
-  state.books = data.books;
-  state.isHost = data.hostId === socket.id;
-  showView("reveal");
-  $("#reveal-controls").classList.toggle("hidden", !state.isHost);
-  $("#play-again-btn").classList.toggle("hidden", !state.isHost);
-  renderReveal(data.revealBookIndex, data.revealEntryIndex);
-});
-
-socket.on("reveal-state", (data) => {
-  renderReveal(data.revealBookIndex, data.revealEntryIndex);
-});
-
-function renderReveal(bookIndex, entryIndex) {
-  const book = state.books[bookIndex];
-  if (!book) return;
-  $("#reveal-book-indicator").textContent = `Book ${bookIndex + 1} / ${state.books.length}`;
-  $("#reveal-owner").textContent = `${book.ownerName}'s book`;
-
-  const content = $("#reveal-content");
-  content.innerHTML = "";
-  const author = $("#reveal-author");
-
-  if (entryIndex === -1 || book.entries.length === 0) {
-    content.innerHTML = `<div class="reveal-text">(no entries)</div>`;
-    author.textContent = "";
-  } else {
-    const entry = book.entries[entryIndex];
-    if (entry.type === "text") {
-      const div = document.createElement("div");
-      div.className = "reveal-text";
-      div.textContent = entry.content || "...";
-      content.appendChild(div);
-    } else {
-      const img = document.createElement("img");
-      img.src = entry.content || "";
-      content.appendChild(img);
-    }
-    author.textContent = `— by ${entry.authorName}`;
+socket.on("stroke", (stroke) => {
+  if (stroke.type === "clear") {
+    clearCanvas();
+    remoteLastPos = null;
+  } else if (stroke.type === "start" || stroke.type === "dot") {
+    remoteLastPos = { x: stroke.x, y: stroke.y };
+    drawDotAt(remoteLastPos, stroke.color, stroke.size);
+  } else if (stroke.type === "move") {
+    const to = { x: stroke.x, y: stroke.y };
+    if (remoteLastPos) drawLineBetween(remoteLastPos, to, stroke.color, stroke.size);
+    remoteLastPos = to;
   }
-
-  const nextBtn = $("#reveal-next-btn");
-  const atVeryEnd = bookIndex === state.books.length - 1 && entryIndex === book.entries.length - 1;
-  nextBtn.textContent = atVeryEnd ? "Finished 🎉" : "Next ▶";
-  nextBtn.disabled = atVeryEnd;
-
-  const prevBtn = $("#reveal-prev-btn");
-  prevBtn.disabled = bookIndex === 0 && entryIndex === 0;
-}
-
-$("#reveal-next-btn").addEventListener("click", () => socket.emit("reveal-next"));
-$("#reveal-prev-btn").addEventListener("click", () => socket.emit("reveal-prev"));
-$("#play-again-btn").addEventListener("click", () => socket.emit("play-again"));
+});
 
 socket.on("connect_error", () => toast("Connection error — retrying…"));

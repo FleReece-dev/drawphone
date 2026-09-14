@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
-<title>Drawphone</title>
+<title>Drawphone — Race the AI</title>
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -14,7 +14,7 @@
 <section id="view-home" class="view active">
   <div class="card center">
     <h1 class="logo">✏️ Drawphone</h1>
-    <p class="subtitle">A telephone-style drawing &amp; guessing party game</p>
+    <p class="subtitle">Draw. Guess. Beat the AI.</p>
 
     <label class="field">
       <span>Your name</span>
@@ -59,15 +59,11 @@
     <div id="host-settings" class="settings hidden">
       <h3>Settings</h3>
       <label class="field inline">
-        <span>Writing time (sec)</span>
-        <input id="write-seconds" type="number" min="15" max="180" />
-      </label>
-      <label class="field inline">
         <span>Drawing time (sec)</span>
-        <input id="draw-seconds" type="number" min="20" max="240" />
+        <input id="round-seconds" type="number" min="30" max="180" />
       </label>
       <button id="start-game-btn" class="btn primary big">Start game</button>
-      <p class="hint">Need at least 3 players to start.</p>
+      <p class="hint">Need at least 2 players to start. Everyone starts with 5 points, wins at 20, spectates at 0.</p>
     </div>
     <p id="lobby-wait-msg" class="hint">Waiting for the host to start the game…</p>
     <button id="leave-room-btn" class="btn ghost small">Leave room</button>
@@ -76,70 +72,77 @@
 
 <!-- GAME -->
 <section id="view-game" class="view">
-  <div class="card wide">
-    <div class="game-topbar">
-      <div id="step-indicator" class="pill">Round 1 / 6</div>
-      <div id="timer" class="pill timer">45</div>
-      <div id="progress-indicator" class="pill">0 / 0 done</div>
-    </div>
+  <div class="game-layout">
+    <div class="card wide game-main">
 
-    <div id="prompt-box" class="prompt-box hidden">
-      <div class="prompt-label">You are drawing:</div>
-      <div id="prompt-text" class="prompt-text"></div>
-    </div>
-
-    <div id="prev-drawing-box" class="prev-drawing-box hidden">
-      <div class="prompt-label">Guess what this drawing shows:</div>
-      <img id="prev-drawing-img" alt="Previous drawing" />
-    </div>
-
-    <!-- TEXT ENTRY -->
-    <div id="text-entry" class="text-entry hidden">
-      <textarea id="text-input" maxlength="80" placeholder="Type your phrase…"></textarea>
-      <div class="text-entry-row">
-        <span id="char-count" class="hint">0 / 80</span>
-        <button id="random-prompt-btn" class="btn ghost small">🎲 Random idea</button>
+      <!-- CHOOSING PHASE -->
+      <div id="choosing-block" class="hidden">
+        <div class="game-topbar">
+          <div id="choosing-pill" class="pill timer">10</div>
+        </div>
+        <div id="choosing-self" class="choosing-self hidden">
+          <h2>Pick a word to draw</h2>
+          <div id="word-options" class="word-options"></div>
+        </div>
+        <div id="choosing-other" class="choosing-other hidden">
+          <h2><span id="choosing-drawer-name"></span> is picking a word…</h2>
+        </div>
       </div>
-      <button id="submit-text-btn" class="btn primary big">Submit</button>
+
+      <!-- DRAWING PHASE -->
+      <div id="drawing-block" class="hidden">
+        <div class="game-topbar">
+          <div id="timer" class="pill timer">80</div>
+          <div id="masked-word" class="pill word-pill"></div>
+          <div id="role-pill" class="pill"></div>
+        </div>
+
+        <div class="canvas-wrap">
+          <canvas id="draw-canvas" width="640" height="480"></canvas>
+        </div>
+
+        <div id="toolbar" class="toolbar hidden">
+          <div id="color-swatches" class="swatches"></div>
+          <input id="color-picker" type="color" value="#111111" title="Custom color" />
+          <input id="brush-size" type="range" min="2" max="28" value="6" title="Brush size" />
+          <button id="eraser-btn" class="btn ghost small" title="Eraser">🧽</button>
+          <button id="clear-btn" class="btn ghost small" title="Clear">🗑️</button>
+        </div>
+
+        <div id="chat-feed" class="chat-feed"></div>
+
+        <form id="guess-form" class="guess-form hidden">
+          <input id="guess-input" maxlength="40" placeholder="Type your guess…" autocomplete="off" />
+          <button type="submit" class="btn primary">Guess</button>
+        </form>
+        <p id="spectator-note" class="hint hidden">👀 You're spectating — watch the round play out.</p>
+      </div>
+
+      <!-- ROUND REVEAL OVERLAY -->
+      <div id="reveal-overlay" class="reveal-overlay hidden">
+        <div class="reveal-card">
+          <div class="reveal-word-label">The word was</div>
+          <div id="reveal-word" class="reveal-word"></div>
+          <div id="reveal-summary" class="reveal-summary"></div>
+        </div>
+      </div>
     </div>
 
-    <!-- DRAWING ENTRY -->
-    <div id="draw-entry" class="draw-entry hidden">
-      <div class="toolbar">
-        <div id="color-swatches" class="swatches"></div>
-        <input id="color-picker" type="color" value="#111111" title="Custom color" />
-        <input id="brush-size" type="range" min="2" max="28" value="6" title="Brush size" />
-        <button id="eraser-btn" class="btn ghost small" title="Eraser">🧽</button>
-        <button id="undo-btn" class="btn ghost small" title="Undo">↩️</button>
-        <button id="clear-btn" class="btn ghost small" title="Clear">🗑️</button>
-      </div>
-      <div class="canvas-wrap">
-        <canvas id="draw-canvas" width="640" height="480"></canvas>
-      </div>
-      <button id="submit-draw-btn" class="btn primary big">Done drawing</button>
-    </div>
-
-    <div id="waiting-overlay" class="waiting-overlay hidden">
-      <div class="spinner"></div>
-      <p>Waiting for other players…</p>
-      <p id="waiting-progress" class="hint"></p>
+    <div class="card scoreboard-card">
+      <h3>Scoreboard</h3>
+      <ul id="scoreboard-list" class="scoreboard-list"></ul>
     </div>
   </div>
 </section>
 
-<!-- REVEAL -->
-<section id="view-reveal" class="view">
-  <div class="card wide center">
-    <div id="reveal-book-indicator" class="pill">Book 1 / 6</div>
-    <h2 id="reveal-owner" class="reveal-owner"></h2>
-    <div id="reveal-content" class="reveal-content"></div>
-    <div id="reveal-author" class="reveal-author"></div>
-
-    <div id="reveal-controls" class="reveal-controls hidden">
-      <button id="reveal-prev-btn" class="btn ghost">◀ Prev</button>
-      <button id="reveal-next-btn" class="btn primary">Next ▶</button>
-    </div>
+<!-- GAME OVER -->
+<section id="view-gameover" class="view">
+  <div class="card center">
+    <h1 class="logo">🏆 Game Over</h1>
+    <h2 id="winner-name" class="winner-name"></h2>
+    <ul id="final-scoreboard" class="scoreboard-list"></ul>
     <button id="play-again-btn" class="btn primary big hidden">Play again</button>
+    <p id="play-again-wait" class="hint hidden">Waiting for the host to start a new game…</p>
   </div>
 </section>
 
